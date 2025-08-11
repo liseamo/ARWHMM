@@ -7,26 +7,6 @@ from pathlib import Path
 from sklearn.metrics import f1_score, precision_score, recall_score
 from random import randrange
 
-# --- Fonction utilitaire pour aplatir et nettoyer ---
-def safe_1d_floats(x):
-    """
-    Aplati un contenu MATLAB (cellule, liste, array) en 1D float propre.
-    - Gère les listes/cell arrays hétérogènes.
-    - Filtre NaN/inf.
-    """
-    if x is None:
-        return np.array([], dtype=float)
-    if isinstance(x, (list, tuple)):
-        parts = [np.asarray(p).ravel() for p in x]
-        if len(parts) == 0:
-            return np.array([], dtype=float)
-        arr = np.concatenate(parts)
-    else:
-        arr = np.asarray(x).ravel()
-    arr = arr.astype(float)
-    arr = arr[np.isfinite(arr)]
-    return arr
-
 # === PARAMÈTRES ===
 base_path = Path("/Users/lise/Library/CloudStorage/GoogleDrive-lamodeo@ensc.fr/Mon Drive/Stage/imu_files")
 mat_results_path = Path("/Users/lise/Desktop/Stage/results")
@@ -147,21 +127,18 @@ class SimpleARWHMM:
         return np.argmax(self.gamma_, axis=1)
 
 # === TRAITEMENT DES SESSIONS ===
-    
-X_all, W_all, timestamps_all, ir_all, feeding_all = [], [], [], [], []
+X_all, W_all, timestamps_all, ir_all = [], [], [], []
 #X_all= les features extraites des signaux IMU
 #W_all= supervision, probabilité que chaque frame appartienne à chaque état
 # timestamps_all → les timestamps downsamplés.
 #ir_all → les événements IR de nourrissage (ir_onsets, ir_offsets).
-
 all_csv_files = list(base_path.glob("*/session*/*.imu_relative.csv"))
-print(f"🔍 {len(all_csv_files)} fichiers trouvés") #sensé en avoir 37
-
+print(f"🔍 {len(all_csv_files)} fichiers trouvés")
 
 #pour chaque csv trouvé: 
 for csv_file in all_csv_files:
     try:
-    #========RÉCUPÉRATION DES DONNÉES========#
+            #========RÉCUPÉRATION DES DONNÉES========#
         print("📂", csv_file)
         mouse_id = csv_file.parts[-3].replace("m", "")
         session_name = csv_file.parts[-2]
@@ -171,7 +148,7 @@ for csv_file in all_csv_files:
         if not mat_file.exists():
             print(f"⚠️ Pas de .mat pour {csv_file.name}, ignoré.")
             continue
-        
+
         #chargement et nettoyage des fichiers (garde juste les colonnes numériques et les valeurs finies)
         df = pd.read_csv(csv_file)
         df = df.select_dtypes(include=[np.number]).dropna()
@@ -198,91 +175,36 @@ for csv_file in all_csv_files:
         acc_cols = [col for col in df.columns if 'acc' in col.lower()]
         acc_df = df[acc_cols].iloc[::factor].copy()
         acc_df.columns = ['accX', 'accY', 'accZ']
-
-        # Norme totale
+       # Norme totale
         acc_df["acc_norm"] = np.linalg.norm(acc_df[["accX", "accY", "accZ"]].values, axis=1)
-
         # Lissage (moyenne glissante)
         acc_df["acc_norm_smooth"] = acc_df["acc_norm"].rolling(window=5, min_periods=1).mean()
-
-        # Variabilité locale (écart-type glissant)
+                # Variabilité locale (écart-type glissant)
         acc_df["acc_norm_std"] = acc_df["acc_norm"].rolling(window=5, min_periods=1).std()
-
-        # Différences (vitesses de changement)
+                # Différences (vitesses de changement)
         acc_df["d_accX"] = acc_df["accX"].diff().fillna(0)
         acc_df["d_acc_norm"] = acc_df["acc_norm"].diff().fillna(0)
-
         # --- Données d'orientation ---
         ori_cols = [col for col in df.columns if 'ori' in col.lower()]
         ori_df = df[ori_cols].iloc[::factor].copy()
         ori_df.columns = ["yaw", "pitch", "roll"]
         ori_df = ori_df.astype(float)
-
-        # Encodage circulaire des angles
-        for col in ["yaw", "pitch", "roll"]:
-            ori_df[col + "_sin"] = np.sin(np.deg2rad(ori_df[col]))
-            ori_df[col + "_cos"] = np.cos(np.deg2rad(ori_df[col]))
-
-        # Norme d'orientation
         ori_df["ori_norm"] = np.linalg.norm(ori_df[["yaw", "pitch", "roll"]].values, axis=1)
         ori_df["ori_norm_smooth"] = ori_df["ori_norm"].rolling(window=5, min_periods=1).mean()
-
         # --- Fusion des features ---
-        features_all = pd.concat([acc_df, ori_df.drop(columns=["yaw", "pitch", "roll"])], axis=1)
+        features_all = pd.concat([acc_df, ori_df], axis=1)
         features_all_zscored = (features_all - features_all.mean()) / features_all.std()
         X_ds = features_all_zscored.values
 
-
     #========CHARGEMENT DES IR========#
         mat = loadmat(mat_file, simplify_cells=True)
-
-        # -- feeding_bouts (optionnel dans tes .mat) --
-        feed_on, feed_off = np.array([]), np.array([])
-        if 'feeding_bouts' in mat and mat['feeding_bouts'] is not None:
-            fb = np.asarray(mat['feeding_bouts'])
-            # Cas: vecteur 1D [on1, off1, on2, off2, ...]
-            if fb.ndim == 1 and fb.size % 2 == 0:
-                fb = fb.reshape(-1, 2)
-            # Cas: 2D déjà en (N,2)
-            elif fb.ndim == 2 and fb.shape[1] == 2:
-                pass
-            else:
-                # Format inattendu -> on sécurise en tableau vide
-                fb = np.empty((0, 2), dtype=float)
-
-            # Nettoyage: float, finites, start<end, tri par start
-            fb = fb.astype(float)
-            fb = fb[np.isfinite(fb).all(axis=1)]
-            if fb.size > 0:
-                fb = fb[fb[:, 0] < fb[:, 1]]      # garde seulement (start<end)
-                fb = fb[np.argsort(fb[:, 0])]     # trie par début
-                feed_on, feed_off = fb[:, 0], fb[:, 1]
-
-        # Sécurise aussi via la fonction utilitaire
-        feed_on  = safe_1d_floats(feed_on)
-        feed_off = safe_1d_floats(feed_off)
-
-        # Sauvegarde pour plots finaux
-        feeding_all.append((feed_on, feed_off))
-
-        # -- IR on/off pour la supervision faible --
-        ir_onsets  = safe_1d_floats(mat.get('ir_onsets', []))
-        ir_offsets = safe_1d_floats(mat.get('ir_offsets', []))
-
-        # Assure une taille identique (zip coupe au plus court, mais on nettoie proprement)
-        n_pairs = min(len(ir_onsets), len(ir_offsets))
-        ir_onsets  = ir_onsets[:n_pairs]
-        ir_offsets = ir_offsets[:n_pairs]
-
-        # Enregistre aussi les IR (pour le plot d’alignement W vs IR)
-        ir_all.append((ir_onsets, ir_offsets))
-
+        ir_onsets = np.atleast_1d(mat['ir_onsets']).flatten()
+        ir_offsets = np.atleast_1d(mat['ir_offsets']).flatten()
 
     #========CRÉATION DES POIDS========#
-        
         W = np.full((len(X_ds), num_states), 1 / num_states)
         eps = 0.0025
-
+    
         #Pour chaque frame : Si elle tombe dans un intervalle IR → état nourrissage (1) presque certain, Sinon → état non-nourrissage (0) presque certain.
         for i, t in enumerate(timestamps_ds):
             is_feeding = any(start <= t <= end for start, end in zip(ir_onsets, ir_offsets))
@@ -292,9 +214,8 @@ for csv_file in all_csv_files:
             else:
                 W[i] = np.full(num_states, eps)
                 W[i][0] = 1 - eps * (num_states - 1)
-
     #========STOCKAGE========#
-#Stocker les données préparées de chaque session              
+#Stocker les données préparées de chaque session 
         if len(X_ds) > ar_order + 10:
             X_all.append(X_ds[ar_order:])
             W_all.append(W[ar_order:])
@@ -310,20 +231,18 @@ for csv_file in all_csv_files:
 print(f"📤 {len(X_all)} sessions disponibles")
 #on choisit au hasard une session que sera la ssession test 
 test_index = randrange(len(X_all))
+
 X_test = X_all[test_index]
 W_test = W_all[test_index]
 ts_test = timestamps_all[test_index]
 ir_onsets_test, ir_offsets_test = ir_all[test_index]
-
 #concaténation des X_train et W_train sur toutes les sessions sauf celle du test
 #@@@@@@@@@@@@@ ça veut dire quoi concaténer
 X_train = np.vstack([x for i, x in enumerate(X_all) if i != test_index])
 W_train = np.vstack([w for i, w in enumerate(W_all) if i != test_index])
-#@@@@@@@@@@@@@ pourquoi len =7 dans le terminal??
+
 print(f"✅ Session {test_index+1}/{len(X_all)} choisie pour test")
-print(f"📂 Session test : {all_csv_files[test_index]}")
 print(f"✅ Entraînement sur {X_train.shape[0]} points, test sur {X_test.shape[0]} points")
-feed_on_test, feed_off_test = feeding_all[test_index]
 
 # === ENTRAÎNEMENT ===
 #appel la classe SimpleARWHMM, apprend à segmenter les données en tenant compte des poids W_train
@@ -334,7 +253,7 @@ model.fit(X_train, W_train)
 #calcul la log-vraisemblance de la session test pour chaque état latent
 log_lik_test = model._compute_log_likelihoods(X_test)
 #gamma_test est la probabilité a posteriori pour chaque point d’appartenir à chaque état (p(z_t = k | données)), après avoir passé le forward-backward (algorithme de lissage). 
-#W_test est le poids de supervision partielle 
+#W_test est le poids de supervision partielle
 gamma_test, _ = model._forward_backward(log_lik_test, W_test)
 #On prend pour chaque point temporel, l’état le plus probable.
 states_test = np.argmax(gamma_test, axis=1)
@@ -365,8 +284,6 @@ plt.figure(figsize=(12, 3))
 plt.plot(ts_test, X_test[:, 0], label="accX", alpha=0.5)
 plt.plot(ts_test, pred_labels, label="Prédiction nourrissage", linewidth=1.5)
 plt.plot(ts_test, gt_labels, label="IR feeding (binaire)", linestyle='--', linewidth=1.5)
-for s, e in zip(feed_on_test, feed_off_test):
-    plt.axvspan(s, e, color='green', alpha=0.15, label="Feeding bouts" if 'Feeding bouts' not in plt.gca().get_legend_handles_labels()[1] else None)
 plt.legend()
 plt.title("Correspondance prédictions / IR")
 plt.tight_layout()
@@ -381,4 +298,3 @@ plt.legend()
 plt.title("Alignement W vs événements IR (session test)")
 plt.tight_layout()
 plt.show()
-
