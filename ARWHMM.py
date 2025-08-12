@@ -10,7 +10,7 @@ from random import randrange
 # === PARAMÈTRES ===
 base_path = Path("/Users/lise/Library/CloudStorage/GoogleDrive-lamodeo@ensc.fr/Mon Drive/Stage/imu_files")
 mat_results_path = Path("/Users/lise/Desktop/Stage/results")
-target_fs = 10
+target_fs = 1 #très basse mais meilleur resultat=> que faire? 
 ar_order = 1
 num_states = 3  # à ajuster
 max_iter = 20
@@ -107,7 +107,8 @@ class SimpleARWHMM:
 
             self.coefs[k] = B
             residuals = Y - X_past @ B
-            self.covs[k] = (residuals.T * weights) @ residuals / np.sum(weights) + 1e-6 * np.eye(self.D)
+            self.covs[k] = (residuals.T * weights) @ residuals / np.sum(weights) + 1e-6 * np.eye(self.D) #régularisation de Tikhonov standard (pour éviter les covariances dégénérées.)
+
 
 
     def fit(self, X, W):
