@@ -92,19 +92,23 @@ class SimpleARWHMM:
 
         for k in range(self.K):
             weights = gamma[self.p:, k]
+            sw = np.sqrt(weights)  # racine des poids
+
             X_past = np.array([X[t - self.p:t].flatten() for t in range(self.p, T)])
             Y = X[self.p:]
-            W_diag = np.diag(weights)
+
+            # Matrices pondérées sans créer np.diag(weights)
+            Xw = X_past * sw[:, None]
 
             B = np.zeros((self.p * self.D, self.D))
             for d in range(self.D):
-                y_d = Y[:, d]
-                B_d = np.linalg.pinv(X_past.T @ W_diag @ X_past) @ X_past.T @ W_diag @ y_d
-                B[:, d] = B_d.flatten()
+                y_d = Y[:, d] * sw
+                B[:, d] = np.linalg.pinv(Xw) @ y_d
 
             self.coefs[k] = B
             residuals = Y - X_past @ B
-            self.covs[k] = (residuals.T @ W_diag @ residuals) / np.sum(weights) + 1e-6 * np.eye(self.D)
+            self.covs[k] = (residuals.T * weights) @ residuals / np.sum(weights) + 1e-6 * np.eye(self.D)
+
 
     def fit(self, X, W):
         X = np.asarray(X)
