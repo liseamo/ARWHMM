@@ -22,6 +22,7 @@ target_fs = 5      # Fréquence cible pour downsampling
 ar_order = 1       # Ordre AR pour le modèle
 num_states = 3     # Nombre d'états latents
 eps = 0.0025       # Petite valeur pour pondérations W
+SUP_STRENGTH = 20  # Force de la supervision (à ajuster, ex: 10, 20, 50)
 
 # =======================================
 # CLASSE MODELE ARWHMM
@@ -62,10 +63,10 @@ class SimpleARWHMM:
         # Correction : Protection contre log(0) et valeurs nulles
         W_safe = np.maximum(W, eps)
 
-        log_alpha[self.p] = np.log(np.maximum(self.pi, eps)) + np.log(W_safe[self.p]) + log_lik[self.p]
+        log_alpha[self.p] = np.log(np.maximum(self.pi, eps)) + SUP_STRENGTH * np.log(W_safe[self.p]) + log_lik[self.p]
         for t in range(self.p + 1, T):
             for j in range(self.K):
-                log_alpha[t, j] = np.log(W_safe[t, j]) + log_lik[t, j] + np.logaddexp.reduce(
+                log_alpha[t, j] = SUP_STRENGTH * np.log(W_safe[t, j]) + log_lik[t, j] + np.logaddexp.reduce(
                     log_alpha[t - 1] + np.log(self.A[:, j])
                 )
 
@@ -73,7 +74,7 @@ class SimpleARWHMM:
         for t in reversed(range(self.p, T - 1)):
             for i in range(self.K):
                 log_beta[t, i] = np.logaddexp.reduce(
-                    np.log(self.A[i]) + np.log(W_safe[t + 1]) + log_lik[t + 1] + log_beta[t + 1]
+                    np.log(self.A[i]) + SUP_STRENGTH * np.log(W_safe[t + 1]) + log_lik[t + 1] + log_beta[t + 1]
                 )
 
         log_gamma = log_alpha + log_beta
@@ -88,14 +89,16 @@ class SimpleARWHMM:
                     xi[t, i, j] = (
                         log_alpha[t, i]
                         + np.log(self.A[i, j])
-                        + np.log(W_safe[t + 1, j])
+                        + SUP_STRENGTH * np.log(W_safe[t + 1, j])
                         + log_lik[t + 1, j]
                         + log_beta[t + 1, j]
                     )
             xi[t] -= np.max(xi[t])
             xi[t] = np.exp(xi[t])
             xi[t] /= np.sum(xi[t])
-        return gamma, xi
+            # Calcul de la vraie log-vraisemblance (log-sum-exp sur log_alpha à la dernière étape)
+            log_likelihood = np.logaddexp.reduce(log_alpha[-1])
+        return gamma, xi, log_likelihood    
 
     def _m_step(self, X, gamma, xi):
         T = X.shape[0]
@@ -135,17 +138,17 @@ class SimpleARWHMM:
         prev_ll = -np.inf
         i=0
         max_iter_safe=1000
+       # ...dans la méthode fit...
         while i < max_iter_safe:
-                log_lik = self._compute_log_likelihoods(X)
-                gamma, xi = self._forward_backward(log_lik, W)
-                self._m_step(X, gamma, xi)
-                ll = np.sum(log_lik[self.p:] * gamma[self.p:])
-                i += 1
-                print(f"🔁 Iteration {i}, Log-Likelihood: {ll:.2f}")
-                if np.abs(ll - prev_ll) < self.tol:
-                    print(f"🎉 Convergence atteinte à l'itération {i}.")
-                    break
-                prev_ll = ll
+            log_lik = self._compute_log_likelihoods(X)
+            gamma, xi, ll = self._forward_backward(log_lik, W)  # ll = vraie log-vraisemblance
+            self._m_step(X, gamma, xi)
+            i += 1
+            print(f"🔁 Iteration {i}, Log-Likelihood: {ll:.2f}")
+            if np.abs(ll - prev_ll) < self.tol:
+                print(f"🎉 Convergence atteinte à l'itération {i}.")
+                break
+            prev_ll = ll
         else:
                 print(f"⚠️ Arrêt forcé après {max_iter_safe} itérations sans convergence.")
         self.gamma_ = gamma
@@ -156,17 +159,21 @@ class SimpleARWHMM:
 # =======================================
 # PRÉPARATION DES DONNÉES (IMU / IR)
 # =======================================
+print("⏳ Chargement et prétraitement des données IMU et IR...")
 X_all, W_all, timestamps_all, ir_all = [], [], [], []
 
 all_csv_files = list(base_path.glob("*/session*/*.imu_relative.csv"))
 print(f"🔍 {len(all_csv_files)} fichiers IMU trouvés")
 
 for csv_file in all_csv_files:
+
     try:
+        print(f"➡️ Traitement du fichier : {csv_file.name}")
+
         # -------- CHARGEMENT IMU --------
         df = pd.read_csv(csv_file)
-        df = df.select_dtypes(include=[np.number]).dropna() #garde juste les colonnes numériaues (floqt ou int), dropna enleve les lignes avec valeurs manquantes 
-        df = df[~df.isin([np.inf, -np.inf]).any(axis=1)] #enléve les lignes avec des valeurs infinies
+        df = df.select_dtypes(include=[np.number]).dropna() #garde juste les colonnes numériques (float ou int), dropna enlève les lignes avec valeurs manquantes 
+        df = df[~df.isin([np.inf, -np.inf]).any(axis=1)] #enlève les lignes avec des valeurs infinies
 
         # Timestamps IMU
         time_col = "Time" if "Time" in df.columns else ("IMU Time (s)" if "IMU Time (s)" in df.columns else None)
@@ -178,7 +185,8 @@ for csv_file in all_csv_files:
             timestamps = df[time_col].values
             fs = 1 / np.median(np.diff(timestamps)) if len(np.diff(timestamps)) > 0 else 30
 
-        # -------- CHARGEMENT IR --------
+        # ...dans la boucle for csv_file in all_csv_files: ...
+# -------- CHARGEMENT IR --------
         mouse = csv_file.parts[-3].replace("m", "")
         session_num = int(re.search(r'\d+', csv_file.parts[-2]).group())
         ir_folder = ir_base_folder / mouse
@@ -187,19 +195,56 @@ for csv_file in all_csv_files:
             warnings.warn(f"Pas de fichier IR pour {mouse} session {session_num}", UserWarning)
             continue
 
-        # Correction : Lecture des fichiers IR avec gestion des types
-        ir_binary = pd.read_csv(ir_files[0], header=None, low_memory=False).iloc[:, 0].values
+        # Lecture du fichier IR avec en-tête
+        ir_df = pd.read_csv(ir_files[0], sep=None, engine='python')  # auto-détection du séparateur
+        ir_timestamps = ir_df['timestamp'].values
+        ir_binary = ir_df['presence_binaire'].values
+
+        # Synchronisation par interpolation sur les timestamps IMU
+        from scipy.interpolate import interp1d
+        interp_func = interp1d(ir_timestamps, ir_binary, kind='nearest', bounds_error=False, fill_value=(ir_binary[0], ir_binary[-1]))
+        ir_binary_aligned = interp_func(timestamps)
+
+        # Correction du décalage temporel IMU/IR par cross-corrélation
+        # Utilise la norme d'accélération lissée comme référence
+        acc_norm_smooth = None
+        if 'acc_norm_smooth' in df.columns:
+            acc_norm_smooth = df['acc_norm_smooth'].values
+        else:
+            acc_cols = [col for col in df.columns if 'acc' in col.lower()]
+            if len(acc_cols) >= 3:
+                acc = df[acc_cols[:3]].values
+                acc_norm = np.linalg.norm(acc, axis=1)
+                acc_norm_smooth = pd.Series(acc_norm).rolling(window=5, min_periods=1).mean().values
+
+        if acc_norm_smooth is not None and len(acc_norm_smooth) == len(ir_binary_aligned):
+            # Centrage pour la corrélation
+            acc_centered = acc_norm_smooth - np.mean(acc_norm_smooth)
+            ir_centered = ir_binary_aligned - np.mean(ir_binary_aligned)
+            # Cross-corrélation
+            corr = np.correlate(acc_centered, ir_centered, mode='full')
+            lags = np.arange(-len(acc_centered) + 1, len(acc_centered))
+            best_lag = lags[np.argmax(np.abs(corr))]
+            print(f"Décalage optimal IMU/IR détecté (en points): {best_lag}")
+            # Décalage de la séquence IR
+            if best_lag > 0:
+                ir_binary_aligned = np.pad(ir_binary_aligned, (best_lag, 0), mode='edge')[:-best_lag]
+            elif best_lag < 0:
+                ir_binary_aligned = np.pad(ir_binary_aligned, (0, -best_lag), mode='edge')[-best_lag:]
+            # Sinon, best_lag == 0, rien à faire
+        else:
+            print("⚠️ Impossible de corriger le décalage IMU/IR (feature manquante ou taille incohérente)")
 
         # Alignement des longueurs IMU et IR AVANT downsampling
-        min_len = min(len(df), len(ir_binary))
+        min_len = min(len(df), len(ir_binary_aligned))
         df = df.iloc[:min_len]
-        ir_binary = ir_binary[:min_len]
+        ir_binary_aligned = ir_binary_aligned[:min_len]
         timestamps = timestamps[:min_len]
-
+            
         # Downsampling
         factor = max(1, int(fs / target_fs))
         df_ds = df.iloc[::factor].copy()
-        ir_binary_ds = ir_binary[::factor]
+        ir_binary_ds = ir_binary_aligned[::factor]
         timestamps_ds = timestamps[::factor]
 
         # Vérification finale des longueurs
@@ -231,28 +276,27 @@ for csv_file in all_csv_files:
             ori_df["ori_norm"] = np.linalg.norm(ori_df[["yaw", "pitch", "roll"]].values, axis=1)
             ori_df["ori_norm_smooth"] = ori_df["ori_norm"].rolling(window=5, min_periods=1).mean()
             if len(acc_df) != len(ori_df):
-                print(f"❌ Erreur : acc_df et ori_df n'ont pas le même nombre de lignes pour {csv_file.name} ({len(acc_df)} vs {len(ori_df)})")
+                warnings.warn(f"Erreur : acc_df et ori_df n'ont pas le même nombre de lignes pour {csv_file.name} ({len(acc_df)} vs {len(ori_df)})", RuntimeWarning)
                 continue
-            features_all = pd.concat([acc_df, ori_df], axis=1) 
+            features_all = pd.concat([acc_df, ori_df], axis=1)
+            print(f"ℹ️ Colonnes d'orientation détectées dans {csv_file.name}")
         else:
             features_all = acc_df.copy()
             warnings.warn(f"Pas de colonnes d'orientation dans {csv_file.name}, utilisation uniquement des données d'accélération.", UserWarning)
 
-#features_all: dataframes contenant l'ensemble des variables extraites des données IMU (accX, accY, accZ, yaw, pitch, roll) qui serviront à l'entraînement du modèle ARWHMM
-        
-        # Normalisation
-        std = features_all.std() # Calcul des écarts-types de chaques colonnes 
+        # Normalisation robuste
+        std = features_all.std()
         std[std == 0] = 1e-8  # Remplace les écarts-types nuls par une petite valeur
-        features_all_zscored = (features_all - features_all.mean()) / features_all.std() #normalisation z-score (on soustrait la moyenne et on divise par l'écart-type)
-        X_ds = features_all_zscored.values # Conversion en numpy array
+        features_all_zscored = (features_all - features_all.mean()) / std
+        X_ds = features_all_zscored.values
         if np.isnan(features_all_zscored.values).any() or np.isinf(features_all_zscored.values).any():
             warnings.warn(f"Attention : NaN ou infini détecté dans les features normalisées pour {csv_file.name}", RuntimeWarning)
 
         # Correction : Création de W avec des valeurs minimales
-        W = np.full((len(ir_binary_ds), num_states), eps)
-        W[:, 0] = 1 - 2 * eps  # Assurez-vous que la somme des probabilités est 1
-        W[ir_binary_ds == 1, 0] = eps
-        W[ir_binary_ds == 1, 1] = 1 - 2 * eps
+        W = np.full((len(ir_binary_ds), num_states), 0.01)
+        W[:, 0] = 0.99
+        W[ir_binary_ds == 1, 0] = 0.01
+        W[ir_binary_ds == 1, 1] = 0.99
 
         # Stockage
         if len(X_ds) > ar_order + 10:
@@ -267,9 +311,19 @@ for csv_file in all_csv_files:
     except Exception as e:
         warnings.warn(f"Erreur pour {csv_file.name} : {type(e).__name__} - {e}", RuntimeWarning)
         traceback.print_exc()
+print("✅ Chargement et prétraitement terminés.")
+
+print("=== Vérification de la proportion de 1 dans chaque session IR ===")
+for i, ir_seq in enumerate(ir_all):
+    prop = np.mean(ir_seq)
+    print(f"Session {i}: proportion de 1 dans IR = {prop:.3f} (longueur {len(ir_seq)})")
+print("===============================================")
+
 # =======================================
 # VÉRIFICATION DES TAILLES AVANT ENTRAINEMENT
 # =======================================
+print("🔎 Vérification des tailles des sessions...")
+
 if len(X_all) == 0:
     raise ValueError("❌ Aucune session valide trouvée.")
 
@@ -280,15 +334,37 @@ for i in range(len(X_all)):
     W_all[i] = W_all[i][:min_len]
     ir_all[i] = ir_all[i][:min_len]
     print(f"✅ Session {i} ajustée à {min_len} échantillons")
+print("✅ Vérification des tailles terminée.")
+
+print("=== Vérifications avancées sur les IR binaires ===")
+for i, ir_seq in enumerate(ir_all):
+    print(f"Session {i}:")
+    print(f"  - Longueur IR : {len(ir_seq)}")
+    uniques, counts = np.unique(ir_seq, return_counts=True)
+    print(f"  - Valeurs uniques IR : {dict(zip(uniques, counts))}")
+    if np.isnan(ir_seq).any():
+        print("  - ⚠️ Attention : NaN détecté dans IR")
+    if np.isinf(ir_seq).any():
+        print("  - ⚠️ Attention : Inf détecté dans IR")
+    ones_idx = np.where(ir_seq == 1)[0]
+    if len(ones_idx) > 0:
+        print(f"  - Indices des 1 (extrait) : {ones_idx[:10]} ...")
+    else:
+        print("  - Aucun événement IR=1 détecté")
+print("===============================================")
+
 
 # =======================================
 # TRAIN / TEST SPLIT
 # =======================================
+print("🔀 Séparation train/test...")
+
 # Sélection aléatoire d'une session pour le test
 test_index = randrange(len(X_all))
 # Séparation des données d'entraînement et de test
 X_test = X_all[test_index]
 W_test = W_all[test_index]
+
 #extrire les timestamp et les données IR pour la session de test
 ts_test = timestamps_all[test_index] #contient les timestamps de la session de test, sont utilises pour afficher les graphiques
 ir_binary_test = ir_all[test_index] #contient la sequence binaire d'IR pour la session de test, utilisée pour l'évaluation du modèle (ground truth)
@@ -306,35 +382,50 @@ W_train = np.vstack([w for i, w in enumerate(W_all) if i != test_index])
 
 print(f"✅ Session {test_index+1}/{len(X_all)} choisie pour test")
 print(f"✅ Entraînement sur {X_train.shape[0]} points, test sur {X_test.shape[0]} points")
+print("✅ Séparation train/test terminée.")
 
 # =======================================
 # ENTRAINEMENT DU MODELE
 # =======================================
+print("🚀 Début de l'entraînement du modèle ARWHMM...")
+
 try:
     model = SimpleARWHMM(num_states=num_states, ar_order=ar_order)
     model.fit(X_train, W_train)
 except Exception as e:
-    print(f"❌ Erreur lors de l'entraînement : {e}")
+    warnings.warn(f"Erreur lors de l'entraînement : {type(e).__name__} - {e}", RuntimeWarning)
     traceback.print_exc() #affiche toutes les informations de l'erreur
     exit(1)
+print("✅ Entraînement du modèle terminé.")
+
 
 # =======================================
 # PREDICTION ET EVALUATION
 # =======================================
+print("🔮 Prédiction et évaluation sur la session test...")
+
+W_test_eval = np.ones_like(W_test)
 log_lik_test = model._compute_log_likelihoods(X_test)
-gamma_test, _ = model._forward_backward(log_lik_test, W_test)
+gamma_test, _, log_likelihood_test = model._forward_backward(log_lik_test, W_test_eval)
 states_test = np.argmax(gamma_test, axis=1)
+print(f"Log-vraisemblance (test) : {log_likelihood_test:.2f}")
 
 # Alignement final des tailles
 min_len = min(len(states_test), len(ir_binary_test))
 states_test = states_test[:min_len]
 ir_binary_test = ir_binary_test[:min_len]
 
-# Identification de l'état de nourrissage
-feeding_state = np.argmax([
-    np.mean(W_test[states_test == k, 1]) if np.any(states_test == k) else 0
-    for k in range(num_states)
-])
+# Identification de l'état de nourrissage par corrélation avec IR_test
+correlations = []
+for k in range(num_states):
+    pred = (states_test == k).astype(float)
+    if np.std(pred) > 0 and np.std(ir_binary_test) > 0:
+        corr = np.corrcoef(pred, ir_binary_test)[0, 1]
+    else:
+        corr = 0
+    correlations.append(corr)
+feeding_state = np.argmax(np.abs(correlations))
+print(f"Corrélations état/IR : {correlations}")
 
 # Correction : Assurez-vous que gt_labels et pred_labels sont des entiers
 pred_labels = (states_test == feeding_state).astype(int)
@@ -355,10 +446,13 @@ print(f"🎯 F1-score test     : {f1:.3f}")
 print(f"🎯 Précision         : {precision:.3f}")
 print(f"🎯 Rappel            : {recall:.3f}")
 print(f"🔍 État nourrissage détecté : {feeding_state}")
+print("✅ Prédiction et évaluation terminées.")
+
 
 # =======================================
 # VISUALISATION
 # =======================================
+print("📊 Affichage des graphiques de résultats...")
 plt.figure(figsize=(12, 3))
 plt.plot(ts_test[:min_len], X_test[:min_len, 0], label="accX", alpha=0.5)
 plt.plot(ts_test[:min_len], pred_labels, label="Prédiction nourrissage", linewidth=1.5)
@@ -374,3 +468,4 @@ plt.legend()
 plt.title("Alignement W vs événements IR (session test)")
 plt.tight_layout()
 plt.show()
+print("✅ Visualisation terminée.")
