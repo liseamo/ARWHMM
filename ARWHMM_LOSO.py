@@ -353,119 +353,115 @@ for i, ir_seq in enumerate(ir_all):
         print("  - Aucun événement IR=1 détecté")
 print("===============================================")
 
+from sklearn.metrics import f1_score, precision_score, recall_score
 
-# =======================================
-# TRAIN / TEST SPLIT
-# =======================================
-print("🔀 Séparation train/test...")
+f1_scores, precisions, recalls = [], [], []
 
-# Sélection aléatoire d'une session pour le test
-test_index = randrange(len(X_all))
-# Séparation des données d'entraînement et de test
-X_test = X_all[test_index]
-W_test = W_all[test_index]
+from sklearn.metrics import f1_score, precision_score, recall_score
 
-#extrire les timestamp et les données IR pour la session de test
-ts_test = timestamps_all[test_index] #contient les timestamps de la session de test, sont utilises pour afficher les graphiques
-ir_binary_test = ir_all[test_index] #contient la sequence binaire d'IR pour la session de test, utilisée pour l'évaluation du modèle (ground truth)
+print("=== Début Cross-Validation Leave-One-Session-Out ===")
 
-shapes_X = [x.shape[1] for i, x in enumerate(X_all) if i != test_index]
-if len(set(shapes_X)) > 1:
-    warnings.warn(f"Erreur : Les matrices X à empiler n'ont pas le même nombre de colonnes : {shapes_X}", RuntimeWarning)
-    exit(1)
-shapes_W = [w.shape[1] for i, w in enumerate(W_all) if i != test_index]
-if len(set(shapes_W)) > 1:
-    warnings.warn(f"Erreur : Les matrices W à empiler n'ont pas le même nombre de colonnes : {shapes_W}", RuntimeWarning)
-    exit(1)
-X_train = np.vstack([x for i, x in enumerate(X_all) if i != test_index])
-W_train = np.vstack([w for i, w in enumerate(W_all) if i != test_index])
+rows = []
+f1_scores, precisions, recalls = [], [], []
+TP = FP = FN = TN = 0  # pour micro-averaging
 
-print(f"✅ Session {test_index+1}/{len(X_all)} choisie pour test")
-print(f"✅ Entraînement sur {X_train.shape[0]} points, test sur {X_test.shape[0]} points")
-print("✅ Séparation train/test terminée.")
-
-# =======================================
-# ENTRAINEMENT DU MODELE
-# =======================================
-print("🚀 Début de l'entraînement du modèle ARWHMM...")
-
-try:
+for test_index in range(len(X_all)):
+    print(f"\n=== Session {test_index+1}/{len(X_all)} en test ===")
+    
+    # Données test
+    X_test = X_all[test_index]
+    W_test = W_all[test_index]
+    ts_test = timestamps_all[test_index]   # utile si tu veux sauvegarder des courbes plus tard
+    ir_test = ir_all[test_index]
+    
+    # Données train (toutes les autres sessions)
+    X_train = np.vstack([x for i, x in enumerate(X_all) if i != test_index])
+    W_train = np.vstack([w for i, w in enumerate(W_all) if i != test_index])
+    
+    # Entraînement
     model = SimpleARWHMM(num_states=num_states, ar_order=ar_order)
     model.fit(X_train, W_train)
+
+    # Décodage sur la session test (sans supervision)
+    W_test_eval = np.ones_like(W_test)
+    log_lik_test = model._compute_log_likelihoods(X_test)
+    gamma_test, _, _ = model._forward_backward(log_lik_test, W_test_eval)
+    states_test = np.argmax(gamma_test, axis=1)
+
+    # Identification de l’état "nourrissage" par corrélation
+    correlations = []
+    for k in range(num_states):
+        pred = (states_test == k).astype(float)
+        if np.std(pred) > 0 and np.std(ir_test) > 0:
+            corr = np.corrcoef(pred, ir_test)[0, 1]
+        else:
+            corr = 0.0
+        correlations.append(corr)
+    feeding_state = np.argmax(np.abs(correlations))
+
+    # Binaire préd/gt
+    pred_labels = (states_test == feeding_state).astype(int)
+    gt_labels = (pd.to_numeric(ir_test, errors='coerce') > 0.5).astype(int)
+
+    # Ajustement longueurs (par sécurité)
+    m = min(len(gt_labels), len(pred_labels))
+    gt_labels = gt_labels[:m]
+    pred_labels = pred_labels[:m]
+
+    # Métriques (zero_division=0 pour éviter les warnings si aucun positif)
+    f1  = f1_score(gt_labels, pred_labels, zero_division=0)
+    prc = precision_score(gt_labels, pred_labels, zero_division=0)
+    rcl = recall_score(gt_labels, pred_labels, zero_division=0)
+
+    print(f"  🎯 F1={f1:.3f}, Précision={prc:.3f}, Rappel={rcl:.3f}")
+
+    # Accumule
+    f1_scores.append(f1)
+    precisions.append(prc)
+    recalls.append(rcl)
+
+    # Confusion pour micro-averaging
+    tp = int(np.sum((pred_labels == 1) & (gt_labels == 1)))
+    fp = int(np.sum((pred_labels == 1) & (gt_labels == 0)))
+    fn = int(np.sum((pred_labels == 0) & (gt_labels == 1)))
+    tn = int(np.sum((pred_labels == 0) & (gt_labels == 0)))
+    TP += tp; FP += fp; FN += fn; TN += tn
+
+    # Garde une ligne de résumé par session
+    rows.append({
+        "session": test_index,
+        "n_points": int(m),
+        "pos_rate": float(np.mean(gt_labels)),
+        "feeding_state": int(feeding_state),
+        "corr_max": float(correlations[feeding_state]),
+        "F1": float(f1),
+        "precision": float(prc),
+        "recall": float(rcl),
+        "TP": tp, "FP": fp, "FN": fn, "TN": tn
+    })
+
+# Résumé final (macro et micro)
+macro_f1  = float(np.mean(f1_scores))
+macro_p   = float(np.mean(precisions))
+macro_r   = float(np.mean(recalls))
+micro_p   = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+micro_r   = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+micro_f1  = (2 * micro_p * micro_r / (micro_p + micro_r)) if (micro_p + micro_r) > 0 else 0.0
+
+print("\n=== Résultats Cross-Validation (Leave-One-Session-Out) ===")
+print(f"Macro  — F1: {macro_f1:.3f} | Précision: {macro_p:.3f} | Rappel: {macro_r:.3f}")
+print(f"Micro  — F1: {micro_f1:.3f} | Précision: {micro_p:.3f} | Rappel: {micro_r:.3f}")
+
+# Tableau récapitulatif par session (optionnel)
+try:
+    cv_df = pd.DataFrame(rows)
+    # Affichage propre
+    with pd.option_context('display.max_rows', None, 'display.width', 120):
+        print("\nDétails par session :")
+        print(cv_df[["session","n_points","pos_rate","feeding_state","corr_max","F1","precision","recall","TP","FP","FN","TN"]]
+              .round({"pos_rate":3,"corr_max":3,"F1":3,"precision":3,"recall":3}))
+    # Sauvegarde (optionnelle)
+    cv_df.to_csv("loso_results.csv", index=False)
+    print("\n💾 Fichier sauvegardé : loso_results.csv")
 except Exception as e:
-    warnings.warn(f"Erreur lors de l'entraînement : {type(e).__name__} - {e}", RuntimeWarning)
-    traceback.print_exc() #affiche toutes les informations de l'erreur
-    exit(1)
-print("✅ Entraînement du modèle terminé.")
-
-
-# =======================================
-# PREDICTION ET EVALUATION
-# =======================================
-print("🔮 Prédiction et évaluation sur la session test...")
-
-W_test_eval = np.ones_like(W_test)
-log_lik_test = model._compute_log_likelihoods(X_test)
-gamma_test, _, log_likelihood_test = model._forward_backward(log_lik_test, W_test_eval)
-states_test = np.argmax(gamma_test, axis=1)
-print(f"Log-vraisemblance (test) : {log_likelihood_test:.2f}")
-
-# Alignement final des tailles
-min_len = min(len(states_test), len(ir_binary_test))
-states_test = states_test[:min_len]
-ir_binary_test = ir_binary_test[:min_len]
-
-# Identification de l'état de nourrissage par corrélation avec IR_test
-correlations = []
-for k in range(num_states):
-    pred = (states_test == k).astype(float)
-    if np.std(pred) > 0 and np.std(ir_binary_test) > 0:
-        corr = np.corrcoef(pred, ir_binary_test)[0, 1]
-    else:
-        corr = 0
-    correlations.append(corr)
-feeding_state = np.argmax(np.abs(correlations))
-print(f"Corrélations état/IR : {correlations}")
-
-# Correction : Assurez-vous que gt_labels et pred_labels sont des entiers
-pred_labels = (states_test == feeding_state).astype(int)
-gt_labels = (pd.to_numeric(ir_binary_test, errors='coerce') > 0.5).astype(int)
-
-# Vérification finale des tailles
-if len(gt_labels) != len(pred_labels):
-    min_len = min(len(gt_labels), len(pred_labels))
-    gt_labels = gt_labels[:min_len]
-    pred_labels = pred_labels[:min_len]
-
-# Calcul des métriques
-f1 = f1_score(gt_labels, pred_labels)
-precision = precision_score(gt_labels, pred_labels)
-recall = recall_score(gt_labels, pred_labels)
-
-print(f"🎯 F1-score test     : {f1:.3f}")
-print(f"🎯 Précision         : {precision:.3f}")
-print(f"🎯 Rappel            : {recall:.3f}")
-print(f"🔍 État nourrissage détecté : {feeding_state}")
-print("✅ Prédiction et évaluation terminées.")
-
-
-# =======================================
-# VISUALISATION
-# =======================================
-print("📊 Affichage des graphiques de résultats...")
-plt.figure(figsize=(12, 3))
-plt.plot(ts_test[:min_len], X_test[:min_len, 0], label="accX", alpha=0.5)
-plt.plot(ts_test[:min_len], pred_labels, label="Prédiction nourrissage", linewidth=1.5)
-plt.plot(ts_test[:min_len], gt_labels, label="IR feeding (binaire)", linestyle='--', linewidth=1.5)
-plt.legend()
-plt.title("Correspondance prédictions / IR")
-plt.tight_layout()
-plt.show()
-
-plt.figure(figsize=(12, 3))
-plt.plot(ts_test[:min_len], ir_binary_test[:min_len], label="IR feeding (binaire)", linestyle='--', linewidth=1.5)
-plt.legend()
-plt.title("Alignement W vs événements IR (session test)")
-plt.tight_layout()
-plt.show()
-print("✅ Visualisation terminée.")
+    print("Impossible de créer/sauvegarder le tableau de résumé :", e)
