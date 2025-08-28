@@ -78,7 +78,7 @@ permet de binariser les signaux IR de detecteurs de présence dans la mangeoire.
 
 ### Script ARWHMM LOSO
 plus robuste et plus prometteur que le script ARWHMM mais très long (compter 1 semaine d'entrainement)
-###Méthodologie
+# Méthodologie
 1. Prétraitement des données
 Nettoyage des fichiers CSV (suppression NaN et inf).
 Alignement temporel IMU ↔ IR par interpolation + correction de décalage (cross-corrélation).
@@ -118,7 +118,7 @@ F1-score (compromis entre précision et rappel).
 
 Résultats stockés dans loso_results.csv (résumé par session + macro/micro-moyennes).
 
-##Utilisation
+# Utilisation
 
 1. Organisation des données
 data/imu_files/mXXXX/sessionY/*.imu_relative.csv   # fichiers IMU
@@ -159,7 +159,7 @@ Si les noms changent → adapter les regex dans le script.
 Ajouter des features (spectres fréquentiels, dérivées d’orientation).
 Explorer d’autres modèles (par ex. ARHMM non supervisé, ou réseaux récurrents).
 
-###Conclusion
+# Conclusion
 
 Ce projet a permis de poser une première brique méthodologique pour la détection de comportements alimentaires à partir de signaux IMU.
 Le pipeline de prétraitement est automatisé.
