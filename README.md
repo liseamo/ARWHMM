@@ -1,42 +1,43 @@
-Explication de tous les fichiers présents dans le dossier.
+Mot de passe: Marchesvp.99
+Explication de tous les fichiers présents dans le dossier : 
 
 # Script get_polygon_coords.py
 
 Objectif: definir les coordonnées des zones d'interet (ici mangeoires+eau) 
 pré-requis: vidéos mp4 d'interêt
 cliquer sur  chaque points du polygones puis espace pour passer à un autre polygone, puis entrée quand c'est terminé. 
-à la sortie: affichage des coordonnées de tous les points cliqués. Les coordonnées peuvent être utilisiées par la suite dans le script zone_souris
+à la sortie: affichage des coordonnées de tous les points cliqués. Les coordonnées obtenues peuvent être utilisées par la suite dans le script zone_souris
 
-# Script Zone_souris
+# Script zone_souris
 
 ## objectifs: 
 - Suivre un point d’intérêt (par ex. le marqueur “Accelerometer” (qui correspond au miniscope) ou le museau de la souris) extrait par DLC,
-- Déterminer automatiquement si l’animal se trouve dans des zones spécifiques de la cage (nourriture, eau),
+- Déterminer automatiquement si l’animal se trouve dans des zones spécifiques de la cage (mangeoire, eau),
 - Produire une vidéo annotée avec les zones et les trajectoires,
 - Exporter un CSV contenant les épisodes (entrées/sorties de zones).
 - permet d'analyser une vidéo sur deeplabcut en visualisant les zones d'interet (les mangeoires et l'eau) 
 
-⚠️ utilisation de deeplabcut -> environnement conda :  sur PC, dans la commande anaconda prompt
-et sur mac et PC dans la commande avant tout lancement de script:   "conda activate dlc-env"
+⚠️ utilisation de deeplabcut -> environnement conda :  sur PC, uniquement dans la commande anaconda prompt. 
+Sur mac et PC dans la commande avant tout lancement de script:   "conda activate dlc-env"
 
-## pré-requis: 
+## données d'entrée: 
 - config.yaml : fichier de configuration du projet DeepLabCut
-- une vidéo à analyser en .mp4 (pas trop longue sinon ça risque de prendre du temps)
-## donnée de sortie: 
-- deux vidéos : une avec les points d'annotations et une avec les point d'interet (le miniscope) et les zones  
-- Un CSV listant les épisodes de présence dans chaque zone (en frames et en secondes).
+- une vidéo à analyser en .mp4 (risque de prendre du temps à analyser si trop longue)
+
+## données de sortie: 
+- deux vidéos : une avec les points d'annotations (nez, miniscope, oreilles, ventre, pattes arrieres) nommée: *nomdelevidéodorigine*DLC_resnet_MeilleureModeleJul23shuffle1_172000_labeled et une avec le point d'interet (le miniscope)+les zones d'intêret nommée *nomdelavideodorigine*_zones_annotée
+- Un CSV listant les épisodes de présence dans chaque zone (en frames et en secondes) nommé *nomdelavideodorigine*_zones_entries
 
 ## Fonctionnement du script
 Étapes automatiques
 L’utilisateur renseigne :
-
 - le chemin de la vidéo .mp4,
 - le nombre de zones de nourriture (1 ou 2).
 
 Le script lance :
 Analyse DeepLabCut (deeplabcut.analyze_videos).
 Génération vidéo DLC annotée (deeplabcut.create_labeled_video).
-Extraction des coordonnées (x,y) du point choisi (ici c'est "Accelerometer"(qui correspond au miniscope).
+Extraction des coordonnées (x,y) du point choisi (ici c'est "Accelerometer"(qui correspond au miniscope)).
 
 Analyse des zones :
 - Définition de polygones fixes représentant les zones (nourriture et eau).
@@ -46,13 +47,13 @@ Analyse des zones :
 Zones définies (par défaut)
 Cas 1 mangeoire :
   Zone Nourriture 1 (polygone vert).
-  Zone Eau (orange).
+  Zone Eau.
 Cas 2 mangeoires :
-  Zone Nourriture 1 (vert).
-  Zone Nourriture 2 (bleu).
-Zone Eau (orange).
+  Zone Nourriture 1.
+  Zone Nourriture 2.
+Zone Eau.
 
-Les coordonnées des polygones sont actuellement codées en dur dans le script (pixels de la vidéo).
+Les coordonnées des polygones sont actuellement codées en dur dans le script mais peuvent etre modifiées à l'aide du script get_polygon_coords.py
 À ajuster si la configuration de la cage change.
 
 ## Paramètres importants
@@ -67,107 +68,117 @@ Pour changer de FPS ou zones → modifier fps et zones_config.
 
 Si les colonnes ne contiennent pas le point choisi → un message liste les points disponibles.
 
-Pour la suite: améliorer l'entrainement deeplabcut pour limiter les saut de points, quitte à faire un projet deeplabcut avec un seul point.
+Pour la suite: améliorer l'entrainement deeplabcut pour limiter les saut de points, quitte à faire un projet deeplabcut avec un seul point (miniscope).
 
 
 # Script lecture_csv(1) et lecture_csv_2GPIO(2)
-permet de binariser les signaux IR de detecteurs de présence dans la mangeoire. 
+Permet de binariser les signaux IR de detecteurs de présence dans la mangeoire en determinant un seuil au dessus duquel on considère que la présence esr détéctée. 
 (1) pour les sessions avec une seule nourriture.
 (2) pour les sessions avce deux nourritures différentes.
 
 
-# Script ARWHMM LOSO
-plus robuste et plus prometteur que le script ARWHMM mais très long (compter 1 semaine d'entrainement)
 
-## Méthodologie
-1. Prétraitement des données
-Nettoyage des fichiers CSV (suppression NaN et inf).
-Alignement temporel IMU ↔ IR par interpolation + correction de décalage (cross-corrélation).
-Extraction de features (accélération, norme, dérivées, orientation si disponible).
-Downsampling des signaux à 5 Hz pour alléger le calcul. (target_fs modifiable)
-Normalisation (z-score robuste).
 
-2. Supervision faible (W)
-L’IR est utilisé pour guider l’apprentissage mais pas comme vérité stricte.
-On construit une matrice W :
-Quand IR=0, l’état "non-feeding" est privilégié.
-Quand IR=1, l’état "feeding" est privilégié.
-    #les infrarouges sont binarisés avec les scripts lecture_csv et lecture_csv_2GPIO si deux portes dans la cage
-Paramètre SUP_STRENGTH : contrôle l’influence de cette supervision.
 
-3. Modèle ARWHMM
-Modèle de type Hidden Markov Model autorégressif (ARHMM).
-Modifié pour intégrer la supervision faible (W).
-Nombre d’états num_states ajustable (Ici il est à 5 mais je ne suis pas sûre que ce soit le plus optimal).
 
-4. Validation croisée (LOSO)
-Méthode Leave-One-Session-Out :
-À chaque itération, une session complète est gardée en test.
-Le modèle est entraîné sur toutes les autres.
-Évaluation sur la session laissée de côté.
-Plus robuste que du simple train/test, et adapté aux données animales (sessions indépendantes).
 
-5. Évaluation
-Identification de l’état "feeding" par corrélation avec le signal IR.
-Calcul des métriques :
-Précision (précision des prédictions positives).
-Rappel (capacité à détecter tous les épisodes de nourrissage).
-F1-score (compromis entre précision et rappel).
 
-Résultats stockés dans loso_results.csv (résumé par session + macro/micro-moyennes).
+# Script ARWHMM: 
+
+Le modèle utilisé est un ARWHMM (AutoRegressive Weakly-supervised Hidden Markov Model), implémenté en Python de manière personnalisée.
+La particularité est que l’algorithme combine :
+- un modèle de Markov caché autorégressif (apprend des états latents de comportement),
+- une supervision faible via les signaux IR (pondération W, qui donne plus d’importance aux périodes de nourrissage).
+
+## Organisation du script
+
+- Chargement et prétraitement des données
+
+- Lecture des fichiers IMU (*.imu_relative.csv) et IR (IR_mouse_session*_binaire.csv).
+
+- Nettoyage des signaux (valeurs infinies/NaN).
+
+- Alignement temporel IMU/IR via interpolation + correction par corrélation croisée.
+
+- Extraction de features (accX, accY, accZ, norme, dérivées, orientation si dispo).
+
+- Normalisation robuste (z-score).
+
+- Création de matrices de supervision W (pondération renforcée sur les périodes IR=1).
+
+- Implémentation du modèle ARWHMM (SimpleARWHMM)
+
+  - Initialisation aléatoire des paramètres.
+
+  - Calcul des vraisemblances conditionnelles via un modèle AR.
+
+  - Algorithme forward-backward pondéré (intègre les W).
+
+  - Estimation par EM (M-step : mise à jour des transitions, coefficients AR et covariances).
+
+  - Critère de convergence basé sur la log-vraisemblance.
+
+- Séparation Train/Test:
+Une session est tirée au hasard comme test, les autres servent à l’entraînement (hold-out leave-one-session).
+
+- Entraînement du modèle
+Le modèle apprend les états latents sur les données train.
+La supervision IR renforce la détection du comportement de nourrissage.
+
+- Prédiction et évaluation
+  - Application du modèle sur la session test.
+  - Identification de l’état latent le plus corrélé au signal IR (ground truth).
+  - Évaluation avec métriques standard : F1-score, précision, rappel.
+- Visualisation
+  - Graphiques comparant prédictions vs. IR (timeline).
+  - Vérification visuelle de l’alignement des signaux.
 
 ## Utilisation
 
-1. Organisation des données
-data/imu_files/mXXXX/sessionY/*.imu_relative.csv   # fichiers IMU
-gpio_binaire/mXXXX/IR_mXXXX_sessionY_binaire.csv  # fichiers IR
+LIBRARIES: pip install numpy pandas matplotlib scipy scikit-learn
 
-2. Paramètres à ajuster
-Dans le script ARWHMM.py :
-target_fs : fréquence cible (5 Hz par défaut).
-num_states : nombre d’états latents (par ex. 5).
-SUP_STRENGTH : poids de la supervision (par ex. 20).
+## Paramètres importants 
 
-## Le script :
-Charge toutes les sessions valides.
-Lance la validation croisée LOSO.
-Affiche les métriques et sauvegarde un fichier loso_results.csv.
+Pour la plupart des paramètres, c'est beaucoup de test et de recherche, les valeurs présentes ne sont pas du tout forcément les plus adaptées
 
-## Résultats typiques
-Le rappel est généralement élevé (le modèle détecte beaucoup d’épisodes).
+target_fs : fréquence cible pour le downsampling (par défaut 5 Hz).
+
+ar_order : ordre autorégressif du modèle (par défaut 1).
+
+num_states : nombre d’états cachés (par défaut 5).
+
+SUP_STRENGTH : force de la supervision (plus grand = le modèle colle davantage aux IR).
+
+eps : régularisation numérique pour éviter les divisions par zéro.
+
+## Notes 
+
+Supervision faible :
+
+Les IR ne sont pas directement utilisés comme labels mais comme pondérations W.
+
+Cela permet d’entraîner un modèle non supervisé, mais guidé par les IR, c'est pour ça que c'est un modèle ARWHMM et pas ARHMM (Auto Regressive Hidden Markov Model)
+
+Déséquilibre de classes :
+
+Le nourrissage représente <10% du temps total, ce qui est vraiement peu, 
+Le script compense en donnant plus de poids aux événements IR=1 via SUP_STRENGTH.
+
+## À améliorer: 
+Pour l'instant, le rappel est généralement élevé (le modèle détecte beaucoup d’épisodes).
 La précision est faible (beaucoup de faux positifs).
-
 Cela reflète le déséquilibre de classes (feeding <10% du temps total).
 
-## Points importants pour la reprise
+- Implémentation maison (pas de package comme ssm) → code plus pédagogique mais moins optimisé.
 
-### Implémentation maison :
-Le code ne repose pas sur une librairie comme ssm.
-Les calculs sont parfois lents ou sensibles aux paramètres.
+- Peu de features → modèle limité en expressivité (basé surtout sur acc norm et orientation).
 
-### Déséquilibre de classes :
-Feeding = minoritaire → précision limitée.
-Il faudra tester des pondérations différentes (SUP_STRENGTH, ajustement des poids W).
+- le num_states le plus adapté pourrait être trouvé pas cross validation 
 
-### Structure des données :
-Bien vérifier la correspondance entre fichiers IMU et IR.
-Si les noms changent → adapter les regex dans le script.
+# Script ARWHMM LOSO
 
-## Perspectives :
-Ajouter des features (spectres fréquentiels, dérivées d’orientation).
-Explorer d’autres modèles (par ex. ARHMM non supervisé, ou réseaux récurrents).
+Même objectif que le script précédent mais modification au niveau du Train/test: on fait un Leave-One_Session-Out: meilleure robustesse statistique: À chaque itération, on retire une session entière (toutes ses données) pour le test, et on entraîne sur toutes les autres.
+Mais très long (compter 1 semaine d'entraînement) et très peu précis, pour l'instant, ca reste qu'uns ébauche 
 
-# Conclusion
-
-Ce projet a permis de poser une première brique méthodologique pour la détection de comportements alimentaires à partir de signaux IMU.
-Le pipeline de prétraitement est automatisé.
-L’ARWHMM faible supervision est opérationnel et validé en LOSO.
-Le modèle distingue déjà une dynamique liée au nourrissage, mais la précision doit être améliorée.
-
-
-### Script ARWHMM backup matlab: 
-même principe que le précédent mais marche avec les scripts matlab, n'est pas optimisé car trop peu de données matlab utilisables pour faire un entrainement correct
-
-### Script ARWHMM_LOSO: 
-
-
+# Script ARWHMM backup matlab: 
+Même principe que les précédent mais marche avec les scripts matlab, n'est pas optimisé car trop peu de données matlab utilisables pour faire un entrainement correct, mais si tu as beaucoup plus de données (à présent j'ai uniquement 7 sessions exploitables), cette idée pourrait devenir intéressante
