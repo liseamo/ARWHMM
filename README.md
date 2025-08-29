@@ -1,15 +1,15 @@
 Explication de tous les fichiers présents dans le dossier.
 
-### Script get_polygon_coords.py
+# Script get_polygon_coords.py
 
 Objectif: definir les coordonnées des zones d'interet (ici mangeoires+eau) 
 pré-requis: vidéos mp4 d'interêt
 cliquer sur  chaque points du polygones puis espace pour passer à un autre polygone, puis entrée quand c'est terminé. 
 à la sortie: affichage des coordonnées de tous les points cliqués. Les coordonnées peuvent être utilisiées par la suite dans le script zone_souris
 
-### Script Zone_souris
+# Script Zone_souris
 
-# objectifs: 
+## objectifs: 
 - Suivre un point d’intérêt (par ex. le marqueur “Accelerometer” (qui correspond au miniscope) ou le museau de la souris) extrait par DLC,
 - Déterminer automatiquement si l’animal se trouve dans des zones spécifiques de la cage (nourriture, eau),
 - Produire une vidéo annotée avec les zones et les trajectoires,
@@ -19,14 +19,14 @@ cliquer sur  chaque points du polygones puis espace pour passer à un autre poly
 ⚠️ utilisation de deeplabcut -> environnement conda :  sur PC, dans la commande anaconda prompt
 et sur mac et PC dans la commande avant tout lancement de script:   "conda activate dlc-env"
 
-# pré-requis: 
+## pré-requis: 
 - config.yaml : fichier de configuration du projet DeepLabCut
 - une vidéo à analyser en .mp4 (pas trop longue sinon ça risque de prendre du temps)
-# donnée de sortie: 
+## donnée de sortie: 
 - deux vidéos : une avec les points d'annotations et une avec les point d'interet (le miniscope) et les zones  
 - Un CSV listant les épisodes de présence dans chaque zone (en frames et en secondes).
 
-# Fonctionnement du script
+## Fonctionnement du script
 Étapes automatiques
 L’utilisateur renseigne :
 
@@ -70,15 +70,16 @@ Si les colonnes ne contiennent pas le point choisi → un message liste les poin
 Pour la suite: améliorer l'entrainement deeplabcut pour limiter les saut de points, quitte à faire un projet deeplabcut avec un seul point.
 
 
-### Script lecture_csv(1) et lecture_csv_2GPIO(2)
+# Script lecture_csv(1) et lecture_csv_2GPIO(2)
 permet de binariser les signaux IR de detecteurs de présence dans la mangeoire. 
 (1) pour les sessions avec une seule nourriture.
 (2) pour les sessions avce deux nourritures différentes.
 
 
-### Script ARWHMM LOSO
+# Script ARWHMM LOSO
 plus robuste et plus prometteur que le script ARWHMM mais très long (compter 1 semaine d'entrainement)
-# Méthodologie
+
+## Méthodologie
 1. Prétraitement des données
 Nettoyage des fichiers CSV (suppression NaN et inf).
 Alignement temporel IMU ↔ IR par interpolation + correction de décalage (cross-corrélation).
@@ -88,12 +89,10 @@ Normalisation (z-score robuste).
 
 2. Supervision faible (W)
 L’IR est utilisé pour guider l’apprentissage mais pas comme vérité stricte.
-
 On construit une matrice W :
 Quand IR=0, l’état "non-feeding" est privilégié.
 Quand IR=1, l’état "feeding" est privilégié.
     #les infrarouges sont binarisés avec les scripts lecture_csv et lecture_csv_2GPIO si deux portes dans la cage
-
 Paramètre SUP_STRENGTH : contrôle l’influence de cette supervision.
 
 3. Modèle ARWHMM
@@ -110,7 +109,6 @@ Plus robuste que du simple train/test, et adapté aux données animales (session
 
 5. Évaluation
 Identification de l’état "feeding" par corrélation avec le signal IR.
-
 Calcul des métriques :
 Précision (précision des prédictions positives).
 Rappel (capacité à détecter tous les épisodes de nourrissage).
@@ -118,7 +116,7 @@ F1-score (compromis entre précision et rappel).
 
 Résultats stockés dans loso_results.csv (résumé par session + macro/micro-moyennes).
 
-# Utilisation
+## Utilisation
 
 1. Organisation des données
 data/imu_files/mXXXX/sessionY/*.imu_relative.csv   # fichiers IMU
@@ -130,32 +128,32 @@ target_fs : fréquence cible (5 Hz par défaut).
 num_states : nombre d’états latents (par ex. 5).
 SUP_STRENGTH : poids de la supervision (par ex. 20).
 
-#Le script :
+## Le script :
 Charge toutes les sessions valides.
 Lance la validation croisée LOSO.
 Affiche les métriques et sauvegarde un fichier loso_results.csv.
 
-#Résultats typiques
+## Résultats typiques
 Le rappel est généralement élevé (le modèle détecte beaucoup d’épisodes).
 La précision est faible (beaucoup de faux positifs).
 
 Cela reflète le déséquilibre de classes (feeding <10% du temps total).
 
-###Points importants pour la reprise
+## Points importants pour la reprise
 
-#Implémentation maison :
+### Implémentation maison :
 Le code ne repose pas sur une librairie comme ssm.
 Les calculs sont parfois lents ou sensibles aux paramètres.
 
-#Déséquilibre de classes :
+### Déséquilibre de classes :
 Feeding = minoritaire → précision limitée.
 Il faudra tester des pondérations différentes (SUP_STRENGTH, ajustement des poids W).
 
-#Structure des données :
+### Structure des données :
 Bien vérifier la correspondance entre fichiers IMU et IR.
 Si les noms changent → adapter les regex dans le script.
 
-#Perspectives :
+## Perspectives :
 Ajouter des features (spectres fréquentiels, dérivées d’orientation).
 Explorer d’autres modèles (par ex. ARHMM non supervisé, ou réseaux récurrents).
 
