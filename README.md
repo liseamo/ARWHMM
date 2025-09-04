@@ -1,4 +1,4 @@
-Mot de passe: Marchesvp.99
+
 Explication de tous les fichiers présents dans le dossier : 
 
 # Script get_polygon_coords.py
